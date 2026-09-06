@@ -37,7 +37,7 @@ on:
       build_time:
         required: false
         type: string
-        default: "Sun Dec 01 08:10:00 UTC 2024"
+        default: "Tue Jun 10 18:59:08 UTC 2025"
 
       # ==================== 功能开关 ====================
       use_zram:
@@ -980,6 +980,8 @@ jobs:
           enable_config CONFIG_IPC_NS
           enable_config CONFIG_PID_NS
           enable_config CONFIG_DEVTMPFS
+
+          enable_config CONFIG_USER_NS
 
           # 可选: 网络相关配置 (Docker/NAT 模式)
           enable_config_if_defined CONFIG_NETFILTER_XT_MATCH_ADDRTYPE
