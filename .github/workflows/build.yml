@@ -80,10 +80,41 @@ on:
         required: false
         type: boolean
         default: false
+      # ==================== KernelSU 开关 ====================
+      enable_kernelsu:
+        description: "集成 KernelSU（关闭 = 纯内核：不打 KSU/SUSFS/KPM，可与 Droidspaces/NTSync 组合）"
+        required: false
+        type: boolean
+        default: true
+      # ==================== 导出 patch 过的内核源码 ====================
+      # 注意：workflow_call 的 inputs 只支持 boolean/number/string（**不支持 choice**，
+      # 用了 choice 会让整个 workflow 报 "Unexpected value 'choice'"），
+      # 所以这里用 string，取值：关闭 / 仅补丁包 / 补丁包 + 推送源码分支
+      # （也接受 off/关闭 等同义值；调用方那边用 choice 下拉框即可）
+      export_patched_source:
+        description: "导出 patch 过的内核源码：关闭 / 仅补丁包 / 补丁包 + 推送源码分支"
+        required: false
+        type: string
+        default: "关闭"
+      export_branch:
+        description: "推送源码用的分支前缀（留空 = patched-src）"
+        required: false
+        type: string
+        default: "patched-src"
+      export_repo:
+        description: "（可选）推送目标仓库 owner/repo；留空 = 本仓库，用 GITHUB_TOKEN"
+        required: false
+        type: string
+        default: ""
+
+    secrets:
+      # 只有要推到"别的仓库"时才需要（PAT，repo 权限）；推到本仓库用内置 GITHUB_TOKEN
+      EXPORT_TOKEN:
+        required: false
 
 jobs:
   build-kernel:
-    name: "${{ inputs.kernel_version }}.${{ inputs.sub_level }}-${{ inputs.android_version }}-${{ inputs.os_patch_level }}-${{ inputs.ksu_variant }}"
+    name: "${{ inputs.kernel_version }}.${{ inputs.sub_level }}-${{ inputs.android_version }}-${{ inputs.os_patch_level }}-${{ inputs.enable_kernelsu && inputs.ksu_variant || 'noKSU' }}"
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -91,6 +122,8 @@ jobs:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
       CCACHE_HARDLINK: "true"
+      # KernelSU 关闭时，产物名/分支名用 noKSU，避免出现 "ReSukiSU_kernel-…" 这种名不副实
+      KSU_TAG: ${{ inputs.enable_kernelsu && inputs.ksu_variant || 'noKSU' }}
 
     steps:
       - name: 构建信息摘要
@@ -307,6 +340,8 @@ jobs:
 
           $REPO --trace sync -c -j$(nproc --all) --no-tags --fail-fast
           echo "REMOTE_BRANCH=$REMOTE_BRANCH" >> $GITHUB_ENV
+          # 记下内核仓库的基线 commit：导出 patch 过的源码时以它为准（即使后续步骤提交过东西也不会漏）
+          echo "KERNEL_BASE_SHA=$(git -C common rev-parse HEAD)" >> $GITHUB_ENV
 
       - name: 应用 Stock Config 伪装
         run: |
@@ -401,6 +436,7 @@ jobs:
           echo "obj-y += hmbird_patch.o" >> Makefile
 
       - name: 确定 KernelSU 分支
+        if: inputs.enable_kernelsu
         id: ksu-branch
         run: |
           variant_input="${{ inputs.ksu_variant }}"
@@ -450,6 +486,7 @@ jobs:
           echo "KSU 分支: $BRANCH"
 
       - name: 添加 KernelSU
+        if: inputs.enable_kernelsu
         working-directory: ${{ env.KERNEL_ROOT }}
         run: |
           case "${{ inputs.ksu_variant }}" in
@@ -497,7 +534,7 @@ jobs:
           fi
 
       - name: 配置 SukiSU 管理器信息
-        if: inputs.ksu_variant == 'SukiSU' || inputs.ksu_variant == 'SukiSU(40726)' || inputs.ksu_variant == 'SukiSU(40548)'
+        if: inputs.enable_kernelsu && (inputs.ksu_variant == 'SukiSU' || inputs.ksu_variant == 'SukiSU(40726)' || inputs.ksu_variant == 'SukiSU(40548)')
         working-directory: ${{ env.KERNEL_ROOT }}/KernelSU
         run: |
           KBUILD_FILE="./kernel/Kbuild"
@@ -550,7 +587,7 @@ jobs:
           echo "已更新 get_ksu_version_full 模板: $VERSION_TEMPLATE"
 
       - name: 应用 SUSFS 补丁
-        if: inputs.enable_susfs
+        if: inputs.enable_kernelsu && inputs.enable_susfs
         working-directory: ${{ env.KERNEL_ROOT }}
         run: |
           echo "应用 SUSFS 补丁..."
@@ -1249,13 +1286,19 @@ jobs:
       - name: 配置内核选项
         working-directory: ${{ env.KERNEL_ROOT }}
         run: |
+          # KernelSU 关闭时不写 CONFIG_KSU / CONFIG_TMPFS_*（纯内核）
+          if [ "${{ inputs.enable_kernelsu }}" != "false" ]; then
           cat >> "$DEFCONFIG" << 'EOF'
           CONFIG_KSU=y
           CONFIG_TMPFS_XATTR=y
           CONFIG_TMPFS_POSIX_ACL=y
           EOF
+          else
+            echo "KernelSU 已关闭：跳过 CONFIG_KSU / CONFIG_TMPFS_*"
+          fi
 
-          if [ "${{ inputs.ksu_variant }}" == "SukiSU" ] || [ "${{ inputs.ksu_variant }}" == "SukiSU(40726)" ] || [ "${{ inputs.ksu_variant }}" == "SukiSU(40548)" ] || [ "${{ inputs.ksu_variant }}" == "ReSukiSU" ] || [ "${{ inputs.ksu_variant }}" == "Next" ]; then
+          if [ "${{ inputs.enable_kernelsu }}" != "false" ] \
+            && { [ "${{ inputs.ksu_variant }}" == "SukiSU" ] || [ "${{ inputs.ksu_variant }}" == "SukiSU(40726)" ] || [ "${{ inputs.ksu_variant }}" == "SukiSU(40548)" ] || [ "${{ inputs.ksu_variant }}" == "ReSukiSU" ] || [ "${{ inputs.ksu_variant }}" == "Next" ]; }; then
             if [[ "${{ inputs.use_kpm }}" == enabled* ]] || [[ "${{ inputs.use_kpm }}" == patched* ]]; then
               if ! grep -RqsE '^[[:space:]]*config[[:space:]]+KPM([[:space:]]|$)' common KernelSU 2>/dev/null; then
                 echo "错误: 已请求启用 KPM，但当前 KernelSU 代码未声明 CONFIG_KPM" >&2
@@ -1288,7 +1331,7 @@ jobs:
           sed -i 's/check_defconfig//' ./common/build.config.gki
 
       - name: 添加 SUSFS 配置
-        if: inputs.enable_susfs
+        if: inputs.enable_kernelsu && inputs.enable_susfs
         run: |
           cat >> "$DEFCONFIG" << 'EOF'
           CONFIG_KSU_SUSFS=y
@@ -1386,6 +1429,77 @@ jobs:
               fi
             fi
           fi
+
+      # ---------------------------------------------------------------------
+      # 导出 patch 过的源码（必须在"编译内核"之前：这时树里只有源码+补丁，
+      # 没有 out/、bazel-* 等构建产物；且用临时索引，不碰真实 index/HEAD，
+      # 以免影响 kleaf 的 scmversion —— 版本串里带不带 -dirty / 用哪个 commit）
+      # ---------------------------------------------------------------------
+      - name: 导出 patch 过的源码（补丁包 / 源码分支）
+        if: inputs.export_patched_source != '关闭' && inputs.export_patched_source != 'off' && inputs.export_patched_source != 'none' && inputs.export_patched_source != ''
+        working-directory: ${{ env.KERNEL_ROOT }}/common
+        env:
+          EXPORT_MODE: ${{ inputs.export_patched_source }}
+          EXPORT_BRANCH: ${{ inputs.export_branch }}
+          EXPORT_REPO: ${{ inputs.export_repo }}
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.android_version }}-${{ inputs.kernel_version }}.${{ inputs.sub_level }}-${KSU_TAG}"
+          BRANCH_BASE="${EXPORT_BRANCH:-patched-src}"
+
+          # 归一化模式：只有明确写着"推送/分支/push/branch"才推分支
+          case "$EXPORT_MODE" in
+            *推送*|*分支*|*push*|*branch*) PUSH_BRANCH=1 ;;
+            *) PUSH_BRANCH=0 ;;
+          esac
+          echo "导出模式: $EXPORT_MODE（推送分支: $PUSH_BRANCH）"
+
+          # 1) 用临时索引生成快照树（不污染源码树的 index/HEAD）
+          TMPIDX="$RUNNER_TEMP/export.index"
+          rm -f "$TMPIDX"
+          export GIT_INDEX_FILE="$TMPIDX"
+          git add -A
+          TREE=$(git write-tree)
+          unset GIT_INDEX_FILE
+          # 基线 = repo sync 之后记下的那个 commit（兜底用 HEAD）
+          PARENT="${KERNEL_BASE_SHA:-$(git rev-parse HEAD)}"
+          echo "基线 commit: $PARENT"
+
+          # 2) 补丁包：相对基线的完整 diff（含新文件 / 二进制）
+          PATCH="$GITHUB_WORKSPACE/patched-src-${TAG}.patch"
+          git diff --binary "$PARENT" "$TREE" > "$PATCH"
+          git diff --stat "$PARENT" "$TREE" | tail -5
+          echo "补丁包: $PATCH（$(du -h "$PATCH" | cut -f1)）"
+          if [ ! -s "$PATCH" ]; then
+            echo "::warning::补丁包为空 —— 源码看起来没被 patch，检查前面的补丁步骤"
+          fi
+
+          # 3) 可选：把 patch 过的整棵树推成一个分支（父提交 = AOSP 的 depth=1 提交）
+          if [ "$PUSH_BRANCH" = 1 ]; then
+            TARGET_REPO="${EXPORT_REPO:-$GITHUB_REPOSITORY}"
+            TOKEN="${{ secrets.EXPORT_TOKEN }}"
+            if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.GITHUB_TOKEN }}"; fi
+
+            MSG="CI patched kernel source: ${TAG}
+
+            base (AOSP): ${PARENT}  ${REMOTE_BRANCH:-}
+            ksu_variant: ${{ env.KSU_TAG }}
+            os_patch_level: ${{ inputs.os_patch_level }}
+            droidspaces: ${{ inputs.droidspaces }}   ntsync: ${{ inputs.droidspaces_ntsync }}
+            zram: ${{ inputs.use_zram }}  bbg: ${{ inputs.use_bbg }}  kpm: ${{ inputs.use_kpm }}  rekernel: ${{ inputs.use_rekernel }}  susfs: ${{ inputs.enable_susfs }}
+            run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+            COMMIT=$(git commit-tree "$TREE" -p "$PARENT" -m "$MSG")
+            git push --force \
+              "https://x-access-token:${TOKEN}@github.com/${TARGET_REPO}.git" \
+              "$COMMIT:refs/heads/${BRANCH_BASE}/${TAG}"
+            echo "已推送源码分支: ${TARGET_REPO} → ${BRANCH_BASE}/${TAG}（commit ${COMMIT}）"
+            echo "- 源码分支: \`${BRANCH_BASE}/${TAG}\` @ \`${TARGET_REPO}\`（commit \`${COMMIT}\`）" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          echo "### patch 过的源码" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 补丁包: \`patched-src-${TAG}.patch\`（$(du -h "$PATCH" | cut -f1)）" >> "$GITHUB_STEP_SUMMARY"
+          git diff --stat "$PARENT" "$TREE" | tail -1 >> "$GITHUB_STEP_SUMMARY"
 
       - name: 编译内核
         uses: nick-fields/retry@v4
@@ -1559,7 +1673,7 @@ jobs:
         if: inputs.artifact_upload_mode != '上传全部'
         uses: actions/upload-artifact@v6
         with:
-          name: ${{ inputs.ksu_variant }}_kernel-${{ env.CONFIG }}-AnyKernel3
+          name: ${{ env.KSU_TAG }}_kernel-${{ env.CONFIG }}-AnyKernel3
           path: AnyKernel3/*
           compression-level: 9
 
@@ -1567,17 +1681,26 @@ jobs:
         if: inputs.artifact_upload_mode == '上传全部'
         uses: actions/upload-artifact@v6
         with:
-          name: ${{ inputs.ksu_variant }}_kernel-${{ env.CONFIG }}
+          name: ${{ env.KSU_TAG }}_kernel-${{ env.CONFIG }}
           path: |
             *AnyKernel3.zip
             *.img
+          compression-level: 9
+
+      - name: 上传 patch 过的源码补丁包
+        if: inputs.export_patched_source != '关闭' && inputs.export_patched_source != 'off' && inputs.export_patched_source != 'none' && inputs.export_patched_source != '' && !cancelled()
+        uses: actions/upload-artifact@v6
+        with:
+          name: patched-src-${{ inputs.android_version }}-${{ inputs.kernel_version }}.${{ inputs.sub_level }}-${{ env.KSU_TAG }}
+          path: patched-src-*.patch
+          if-no-files-found: warn
           compression-level: 9
 
       - name: 上传补丁冲突文件
         if: always() && env.REJ_COUNT > 0
         uses: actions/upload-artifact@v6
         with:
-          name: ${{ inputs.ksu_variant }}_kernel-${{ env.CONFIG }}-Rejects
+          name: ${{ env.KSU_TAG }}_kernel-${{ env.CONFIG }}-Rejects
           path: patch-rejects/
           if-no-files-found: ignore
           compression-level: 9

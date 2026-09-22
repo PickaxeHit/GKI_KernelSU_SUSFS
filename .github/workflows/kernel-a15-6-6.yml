@@ -60,6 +60,20 @@ on:
         required: false
         type: boolean
         default: false
+      enable_kernelsu:
+        description: "集成 KernelSU（关闭 = 纯内核：不含 KSU/SUSFS/KPM，可与 Droidspaces/NTSync 组合）"
+        required: false
+        type: boolean
+        default: true
+      export_patched_source:
+        description: "导出 patch 过的内核源码（补丁包 / 再推一个源码分支到 GitHub）"
+        required: false
+        type: choice
+        options:
+          - "关闭"
+          - "仅补丁包"
+          - "补丁包 + 推送源码分支"
+        default: "关闭"
       use_zram:
         description: "启用 ZRAM 增强算法"
         required: true
@@ -137,6 +151,11 @@ on:
         required: false
         type: boolean
         default: false
+      enable_kernelsu:
+        description: "集成 KernelSU（关闭 = 纯内核：不含 KSU/SUSFS/KPM，可与 Droidspaces/NTSync 组合）"
+        required: false
+        type: boolean
+        default: true
       called_from_main:
         description: "是否从 main.yml 调用（内部使用）"
         required: false
@@ -199,6 +218,8 @@ jobs:
       enable_susfs: ${{ !inputs.cancel_susfs }}
       droidspaces: ${{ inputs.droidspaces || 'off' }}
       droidspaces_ntsync: ${{ inputs.droidspaces_ntsync || false }}
+      enable_kernelsu: ${{ inputs.enable_kernelsu }}
+      export_patched_source: ${{ inputs.export_patched_source || '关闭' }}
       artifact_upload_mode: ${{ inputs.artifact_upload_mode }}
 
   # 仅在直接触发时运行，从 main.yml 调用时跳过
