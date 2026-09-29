@@ -32,12 +32,13 @@ on:
         type: choice
         options:
           - Official
+          - None
           #- Next
           - SukiSU
           - SukiSU(40726)
           - SukiSU(40548)
           - ReSukiSU
-        default: ReSukiSU
+        default: None
 
       # ==================== 可选配置 ====================
       version:
@@ -211,12 +212,13 @@ jobs:
       use_rekernel: ${{ inputs.use_rekernel || false }}
       cve_2026_43499_patch: ${{ inputs.cve_2026_43499_patch }}
       supp_op: ${{ inputs.supp_op || false }}
-      enable_susfs: ${{ !inputs.cancel_susfs }}
+      enable_susfs: ${{ !inputs.cancel_susfs && inputs.kernelsu_variant != 'None' }}
       droidspaces: ${{ inputs.droidspaces || 'off' }}
       droidspaces_ntsync: ${{ inputs.droidspaces_ntsync || false }}
       artifact_upload_mode: ${{ inputs.artifact_upload_mode }}
 
   get-ksu-manager:
+    if: inputs.kernelsu_variant != 'None'
     uses: ./.github/workflows/get-manager.yml
     secrets: inherit
     with:
